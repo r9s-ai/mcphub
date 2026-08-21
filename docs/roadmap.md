@@ -10,9 +10,9 @@ Legend:
 
 ## Current status
 
-The repository currently provides a Phase 0/Phase 1 foundation. A local `mcp-connect` can register one stdio or Streamable HTTP component with `mcp-gateway`, forward basic request/response traffic over WebSocket, and expose in-memory status through the Admin API and dashboard.
+The repository currently provides the Phase 0/Phase 1 connector and Gateway foundation, PostgreSQL/Redis persistence, and the first Group-scoped Dynamic Discovery implementation. A local `mcp-connect` can register stdio or Streamable HTTP components, forward streaming traffic over WebSocket, and expose persisted connection, component, group, catalog, and token authorization state through the Admin API and dashboard.
 
-The remaining MVP-critical work is true streaming and cancellation, reconnect handling, multi-component management, authentication, route isolation, and persistence.
+The next priorities are production hardening, complete end-to-end coverage, and richer operational controls.
 
 ## Phase 0 — Protocol and connector validation
 
@@ -31,14 +31,14 @@ The remaining MVP-critical work is true streaming and cancellation, reconnect ha
 
 ### Remaining Phase 0 work
 
-- [~] Basic request/response forwarding works, and the tunnel now supports multiple response frames; protocol integration tests are still pending.
+- [x] Basic request/response forwarding works, and the tunnel supports multiple response frames.
 - [x] Forward response chunks as multiple frames and preserve `end_of_stream` semantics in the connector/daemon path.
-- [~] Stream SSE and long-lived Streamable HTTP responses without buffering the complete body; Gateway end-to-end coverage is still pending.
+- [x] Stream SSE and long-lived Streamable HTTP responses without buffering the complete body.
 - [x] Forward response chunks as soon as they are available from Streamable HTTP.
 - [x] Add request cancellation frames and cancel upstream requests when the client disconnects.
 - [ ] Add tunnel close/error control frames and wake all pending requests on disconnect.
-- [ ] Add mock stdio and mock Streamable HTTP MCP servers for integration tests.
-- [ ] Verify concurrent requests with out-of-order responses on one tunnel.
+- [~] Add mock stdio and mock Streamable HTTP MCP servers for integration tests.
+- [~] Verify concurrent requests with out-of-order responses on one tunnel.
 
 ## Phase 1 — Single-user MVP
 
@@ -49,7 +49,7 @@ The remaining MVP-critical work is true streaming and cancellation, reconnect ha
 - [x] Admin frontend listens on port `3081` by default.
 - [x] Makefile targets for install, development, testing, building, and running Gateway/Admin together.
 - [x] pnpm-based Admin frontend with overview, connection list, component list, detail view, polling, and address copy.
-- [~] In-memory connection/component registry with online/offline status and heartbeat expiry.
+- [x] Connection/component registry with online/offline status and heartbeat expiry.
 - [~] A single WebSocket can register one component; the data model reserves a future multi-component connection.
 
 ### CLI and local management
@@ -63,20 +63,34 @@ The remaining MVP-critical work is true streaming and cancellation, reconnect ha
 
 ### Gateway, identity, and routing
 
-- [~] Add Connect registration authentication. Static token validation, in-memory Device Code access tokens, refresh, and revoke endpoints are implemented; persistence, rotation, and per-tenant credentials are still pending.
-- [ ] Add user/tenant identity and route access tokens.
-- [~] Add tenant-aware registry keys and tenant/component Gateway routing; authenticated route authorization is still pending.
+- [x] Add Connect registration authentication, Device Code login, refresh, revoke, and PostgreSQL token persistence.
+- [~] Add user/tenant identity and route access tokens. The tenant model and bearer-token validation foundation are available; user and organization identity are pending.
+- [~] Add tenant-aware registry keys and tenant/component Gateway routing; authenticated Hub authorization is implemented, while direct component route authorization remains pending.
 - [x] Enforce unique component names within one tenant during Gateway registration.
-- [ ] Add token expiration, revocation, and per-component authorization.
+- [x] Add token expiration, revocation, and Group-scoped authorization.
 - [~] Add `mcp-connect` automatic reconnect with backoff and re-registration in daemon mode; pending-request recovery and one shared tunnel are still pending.
 - [ ] Preserve stable `connect_id` across reconnects.
 
 ### Persistence and distribution
 
-- [~] Add PostgreSQL persistence and goose migrations. Connects, components, tenants, Device Code records, tokens, and audit schema are implemented; audit writes and full Admin repository reads are still pending.
-- [~] Persist connects, components, tenants, and tokens. Gateway restores persisted Connect/component records on startup; Redis-backed live status overlay and complete history views remain pending.
+- [x] Add PostgreSQL persistence and goose migrations for connects, components, tenants, Device Codes, tokens, groups, tool catalog, token groups, and audit events.
+- [x] Persist connects, components, tenants, tokens, groups, tool bindings, and catalogs. Redis provides live heartbeat state, catalog caching, and refresh locks.
 - [ ] Add macOS/Linux installation scripts or packages.
 - [ ] Publish a hosted Gateway demonstration environment.
+
+## Phase 1.5 — Group-scoped Dynamic Discovery
+
+- [x] Add the virtual Hub endpoint at `/mcp/{tenant}/hub`.
+- [x] Expose only `mcphub_search`, `mcphub_get`, `mcphub_invoke`, and `mcphub_set_group` in the initial Hub tool list.
+- [x] Add tenant-owned Groups and many-to-many Group/tool bindings.
+- [x] Add default Group and allowed Group authorization to access tokens.
+- [x] Enforce tenant and active-Group checks for search, get, invoke, and group switching.
+- [x] Refresh the Tool Catalog from registered Components over the tunnel.
+- [x] Preserve Group/tool bindings when an upstream tool temporarily disappears.
+- [x] Add PostgreSQL-backed Group and Tool Catalog repositories.
+- [x] Add Redis catalog cache and per-component refresh locking.
+- [x] Add Admin Group CRUD, tool binding management, catalog refresh, and Token Group authorization pages.
+- [ ] Add catalog version history, richer search ranking, and tool availability diagnostics.
 
 ### Phase 1 acceptance criteria
 
@@ -91,11 +105,11 @@ The remaining MVP-critical work is true streaming and cancellation, reconnect ha
 
 ### Admin and operations
 
-- [~] Read-only Admin dashboard and REST API exist under `/api/admin`.
+- [~] Admin dashboard and REST API exist under `/api/admin`; connection status plus Group and Token management are available, while full operations management remains pending.
 - [ ] Add an `AdminAuthenticator` middleware boundary and enable Admin authentication.
 - [ ] Add component health checks and expose the last health error.
 - [ ] Add connection-change timestamps and richer status history.
-- [ ] Add request timeout (3 seconds) and polling backoff (5 to 15 seconds) in the Admin frontend.
+- [~] Add request timeout and polling backoff (the dashboard polls and preserves the last successful view; full backoff tuning remains pending).
 - [ ] Add frontend automated tests for loading, empty, error, polling, copy, and detail states.
 
 ### Streamable HTTP security
@@ -149,10 +163,8 @@ The remaining MVP-critical work is true streaming and cancellation, reconnect ha
 
 ## Recommended implementation order
 
-1. Complete multi-frame tunnel streaming and cancellation.
+1. Complete end-to-end tests for concurrent streams, reconnects, and persisted Discovery.
 2. Add reconnect handling and robust pending-request cleanup.
-3. Move routing and Admin lookups to composite tenant/connect/component keys.
-4. Implement local configuration and multi-component CLI management.
-5. Add Connect authentication, route tokens, and PostgreSQL persistence.
-6. Harden SSRF protection and upstream credential handling.
-7. Add limits, audit logs, metrics, and production Admin authentication.
+3. Harden SSRF protection and upstream credential handling.
+4. Add limits, audit metrics, health endpoints, and production Admin authentication.
+5. Add catalog version history, richer discovery ranking, and operational diagnostics.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/r9s-ai/mcphub/internal/gateway"
+	"github.com/r9s-ai/mcphub/internal/store"
 	"github.com/r9s-ai/mcphub/internal/store/postgres"
 	redisstore "github.com/r9s-ai/mcphub/internal/store/redis"
 )
@@ -24,6 +25,8 @@ func main() {
 	}
 	storage := os.Getenv("MCP_STORAGE")
 	var connectStore *postgres.ConnectStore
+	var connectBackend store.ConnectStore
+	var authBackend store.AuthStore
 	if strings.EqualFold(storage, "postgres") || os.Getenv("DATABASE_URL") != "" {
 		dsn := os.Getenv("DATABASE_URL")
 		if dsn == "" {
@@ -38,6 +41,8 @@ func main() {
 			log.Fatal(err)
 		}
 		defer connectStore.Close()
+		connectBackend = connectStore
+		authBackend = connectStore
 	}
 	if *migrateOnly {
 		if connectStore == nil {
@@ -46,6 +51,7 @@ func main() {
 		return
 	}
 	var presence *redisstore.PresenceStore
+	var presenceBackend store.PresenceStore
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" && strings.ToLower(os.Getenv("MCP_REDIS_ENABLED")) != "false" {
 		var err error
 		presence, err = redisstore.New(redisURL)
@@ -53,8 +59,9 @@ func main() {
 			log.Fatal(err)
 		}
 		defer presence.Close()
+		presenceBackend = presence
 	}
-	log.Fatal(gateway.ListenAndServe(*addr, gateway.NewWithStores(*token, *publicURL, connectStore, presence, connectStore)))
+	log.Fatal(gateway.ListenAndServe(*addr, gateway.NewWithStores(*token, *publicURL, connectBackend, presenceBackend, authBackend)))
 }
 
 func getenv(key, fallback string) string {

@@ -102,11 +102,30 @@ func (s *ConnectStore) ValidateAccessToken(ctx context.Context, tokenHash string
 	var id store.TokenIdentity
 	var expires time.Time
 	var revoked *time.Time
-	err := s.Pool.QueryRow(ctx, `SELECT tenant_id,connect_id,expires_at,revoked_at FROM auth_tokens WHERE token_hash=$1 AND token_type='access'`, tokenHash).Scan(&id.TenantID, &id.ConnectID, &expires, &revoked)
+	var defaultGroup string
+	err := s.Pool.QueryRow(ctx, `SELECT tenant_id,connect_id,expires_at,revoked_at,default_group_id FROM auth_tokens WHERE token_hash=$1 AND token_type='access'`, tokenHash).Scan(&id.TenantID, &id.ConnectID, &expires, &revoked, &defaultGroup)
 	if err != nil || revoked != nil || expires.Before(at) {
 		return store.TokenIdentity{}, ErrAuthInvalid
 	}
+	id.DefaultGroupID = defaultGroup
+	rows, err := s.Pool.Query(ctx, `SELECT group_id FROM token_groups WHERE token_hash=$1 AND tenant_id=$2`, tokenHash, id.TenantID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var group string
+			if rows.Scan(&group) == nil {
+				id.AllowedGroupIDs = append(id.AllowedGroupIDs, group)
+			}
+		}
+	}
+	if len(id.AllowedGroupIDs) == 0 && defaultGroup != "" {
+		id.AllowedGroupIDs = []string{defaultGroup}
+	}
 	return id, nil
+}
+
+func (s *ConnectStore) TokenGroups(ctx context.Context, tokenHash string) (store.TokenIdentity, error) {
+	return s.ValidateAccessToken(ctx, tokenHash, time.Now())
 }
 func hashToken(v string) string {
 	b := sha256.Sum256([]byte(v))
@@ -114,3 +133,4 @@ func hashToken(v string) string {
 }
 
 var _ store.AuthStore = (*ConnectStore)(nil)
+var _ store.GroupAuthStore = (*ConnectStore)(nil)

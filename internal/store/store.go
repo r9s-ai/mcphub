@@ -25,7 +25,11 @@ type TokenPair struct {
 	AccessToken, RefreshToken         string
 	AccessExpiresAt, RefreshExpiresAt time.Time
 }
-type TokenIdentity struct{ TenantID, ConnectID string }
+type TokenIdentity struct {
+	TenantID, ConnectID string
+	DefaultGroupID      string
+	AllowedGroupIDs     []string
+}
 type DeviceCodeInput struct {
 	DeviceCodeHash, UserCodeHash, TenantID string
 	ExpiresAt                              time.Time
@@ -38,6 +42,12 @@ type AuthStore interface {
 	RefreshToken(context.Context, string, time.Time) (TokenPair, error)
 	RevokeToken(context.Context, string, time.Time) error
 	ValidateAccessToken(context.Context, string, time.Time) (TokenIdentity, error)
+}
+
+// GroupAuthStore extends AuthStore with discovery group authorization.
+type GroupAuthStore interface {
+	AuthStore
+	TokenGroups(context.Context, string) (TokenIdentity, error)
 }
 
 type PresenceStore interface {

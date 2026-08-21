@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/r9s-ai/mcphub/internal/admin"
 	"github.com/r9s-ai/mcphub/internal/auth"
+	"github.com/r9s-ai/mcphub/internal/discovery"
 	"github.com/r9s-ai/mcphub/internal/registry"
 	"github.com/r9s-ai/mcphub/internal/store"
 	"github.com/r9s-ai/mcphub/pkg/protocol"
@@ -101,9 +102,12 @@ type Gateway struct {
 	upgrader      websocket.Upgrader
 	connectToken  string
 	deviceAuth    *auth.DeviceAuth
+	authStore     store.AuthStore
 	connectStore  store.ConnectStore
 	presenceStore store.PresenceStore
 	auditStore    store.AuditStore
+	discovery     *discovery.Service
+	hubSessions   sync.Map
 }
 
 func routeKey(tenant, component string) string { return tenant + ":" + component }
@@ -127,7 +131,8 @@ func NewWithStores(connectToken, publicURL string, cs store.ConnectStore, ps sto
 	if v, ok := cs.(store.AuditStore); ok {
 		audit = v
 	}
-	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: deviceAuth, connectStore: cs, presenceStore: ps, auditStore: audit, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: deviceAuth, authStore: as, connectStore: cs, presenceStore: ps, auditStore: audit, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	g.discovery = discovery.New(g.invokeTool)
 	if cs != nil {
 		go g.restore(context.Background())
 	}
@@ -181,9 +186,37 @@ func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp/", g.handleMCP)
 	mux.HandleFunc("/tunnel", g.handleTunnel)
+	mux.HandleFunc("/api/admin/catalog/components/", g.handleCatalogRefresh)
 	admin.New(g.registry).Register(mux)
+	admin.NewDiscovery(g.discovery).Register(mux)
 	g.deviceAuth.Register(mux)
 	return mux
+}
+
+func (g *Gateway) handleCatalogRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/catalog/components/"), "/"), "/")
+	if len(parts) != 2 || parts[1] != "refresh" || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	tenant := r.URL.Query().Get("tenant_id")
+	if tenant == "" {
+		tenant = "demo"
+	}
+	component := parts[0]
+	g.mu.RLock()
+	s, ok := g.sessions[routeKey(tenant, component)]
+	g.mu.RUnlock()
+	if !ok {
+		http.Error(w, "component not connected", http.StatusServiceUnavailable)
+		return
+	}
+	go g.refreshDiscovery(tenant, component, s)
+	w.WriteHeader(http.StatusAccepted)
 }
 func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -192,6 +225,10 @@ func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, component := parts[1], parts[2]
+	if component == "hub" {
+		g.handleHub(w, r, tenant)
+		return
+	}
 	g.mu.RLock()
 	s, ok := g.sessions[routeKey(tenant, component)]
 	g.mu.RUnlock()
@@ -340,6 +377,7 @@ func (g *Gateway) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		// carried by the frame and stored by the registry before routing begins.
 		g.mu.Lock()
 		g.sessions[routeKey(tenantID, f.ComponentID)] = s
+		go g.refreshDiscovery(tenantID, f.ComponentID, s)
 		g.mu.Unlock()
 	})
 	if connectID != "" {

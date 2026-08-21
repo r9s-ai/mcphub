@@ -68,6 +68,7 @@ The next priorities are production hardening, complete end-to-end coverage, and 
 - [~] Add tenant-aware registry keys and tenant/component Gateway routing; authenticated Hub authorization is implemented, while direct component route authorization remains pending.
 - [x] Enforce unique component names within one tenant during Gateway registration.
 - [x] Add token expiration, revocation, and Group-scoped authorization.
+- [x] Protect direct `/mcp/{tenant}/{component}` routes with tenant-aware bearer-token validation when persistent auth is enabled.
 - [~] Add `mcp-connect` automatic reconnect with backoff and re-registration in daemon mode; pending-request recovery and one shared tunnel are still pending.
 - [ ] Preserve stable `connect_id` across reconnects.
 
@@ -106,7 +107,7 @@ The next priorities are production hardening, complete end-to-end coverage, and 
 ### Admin and operations
 
 - [~] Admin dashboard and REST API exist under `/api/admin`; connection status plus Group and Token management are available, while full operations management remains pending.
-- [ ] Add an `AdminAuthenticator` middleware boundary and enable Admin authentication.
+- [x] Add an `AdminAuthenticator` middleware boundary with `MCP_ADMIN_TOKEN` bearer authentication.
 - [ ] Add component health checks and expose the last health error.
 - [ ] Add connection-change timestamps and richer status history.
 - [~] Add request timeout and polling backoff (the dashboard polls and preserves the last successful view; full backoff tuning remains pending).
@@ -115,8 +116,8 @@ The next priorities are production hardening, complete end-to-end coverage, and 
 ### Streamable HTTP security
 
 - [~] Loopback-only upstream validation is enabled by default, with explicit host allowlisting for development.
-- [ ] Validate resolved IPs, not only the URL hostname.
-- [ ] Block private networks, cloud metadata endpoints, unsafe ports, and unauthorized redirects.
+- [x] Resolve upstream hostnames and reject private/link-local/metadata addresses unless explicitly allowlisted.
+- [~] Block cloud metadata endpoints and unauthorized redirects; unsafe-port policy and a dedicated network egress policy remain pending.
 - [ ] Add configurable HTTP header allowlists.
 - [ ] Store upstream credentials securely and never expose them in Admin responses.
 - [ ] Redact credentials and sensitive URL data in status and audit records.
@@ -125,9 +126,9 @@ The next priorities are production hardening, complete end-to-end coverage, and 
 ### Limits, observability, and audit
 
 - [ ] Add request body and response body limits.
-- [ ] Add per-route rate limits and per-component concurrency limits.
+- [~] Add per-route rate limits through Redis or an in-process fallback; per-component concurrency limits remain pending.
 - [~] Add structured audit logs with sensitive-field redaction. Gateway request audit persistence is wired to PostgreSQL; actor enrichment and full redaction policy are still pending.
-- [ ] Add Gateway and `mcp-connect` metrics, health endpoints, and latency measurements.
+- [~] Add Gateway metrics and health endpoints. Prometheus-style totals and `/healthz` are available; latency histograms and component metrics remain pending.
 - [ ] Add version checking and an upgrade mechanism for `mcp-connect`.
 
 ### Phase 2 acceptance criteria

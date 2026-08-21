@@ -36,10 +36,40 @@ func NewHTTPConnector(cfg HTTPConfig) (*HTTPConnector, error) {
 	if len(cfg.AllowHosts) == 0 {
 		cfg.AllowHosts = []string{"127.0.0.1", "localhost", "::1"}
 	}
+	if err := validateUpstream(u, cfg.AllowHosts); err != nil {
+		return nil, err
+	}
 	if !hostAllowed(u.Hostname(), cfg.AllowHosts) {
 		return nil, fmt.Errorf("upstream host %q is not allowed", u.Hostname())
 	}
 	return &HTTPConnector{cfg: cfg, client: &http.Client{Timeout: cfg.Timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+func validateUpstream(u *url.URL, allow []string) error {
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	explicit := hostAllowed(host, allow)
+	if ip := net.ParseIP(host); ip != nil {
+		if privateOrMetadata(ip) && !explicit {
+			return fmt.Errorf("upstream address %q is not allowed", host)
+		}
+		return nil
+	}
+	if host == "metadata.google.internal" || host == "metadata" {
+		return fmt.Errorf("upstream host %q is not allowed", host)
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("cannot resolve upstream host %q: %w", host, err)
+	}
+	for _, ip := range ips {
+		if privateOrMetadata(ip) && !explicit {
+			return fmt.Errorf("upstream host %q resolves to a private address", host)
+		}
+	}
+	return nil
+}
+func privateOrMetadata(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.String() == "169.254.169.254" || ip.String() == "100.100.100.200"
 }
 
 func hostAllowed(host string, allow []string) bool {

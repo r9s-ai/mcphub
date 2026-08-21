@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -109,6 +110,7 @@ type Gateway struct {
 	auditStore    store.AuditStore
 	discovery     *discovery.Service
 	hubSessions   sync.Map
+	localLimiter  *localLimiter
 }
 
 func routeKey(tenant, component string) string { return tenant + ":" + component }
@@ -199,8 +201,19 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/api/admin/tokens/", g.handleTokenGroups)
 	admin.New(g.registry).Register(mux)
 	admin.NewDiscovery(g.discovery).Register(mux)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	mux.HandleFunc("/metrics", g.handleMetrics)
 	g.deviceAuth.Register(mux)
-	return mux
+	return g.adminAuth(mux)
+}
+
+func (g *Gateway) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	connects, components := g.registry.Snapshot()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	_, _ = fmt.Fprintf(w, "mcphub_connect_total %d\nmcphub_component_total %d\nmcphub_timestamp_seconds %d\n", len(connects), len(components), time.Now().Unix())
 }
 
 func (g *Gateway) handleTokenGroups(w http.ResponseWriter, r *http.Request) {
@@ -292,7 +305,21 @@ func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	tenant, component := parts[1], parts[2]
 	if component == "hub" {
+		if !g.authenticateRoute(r, tenant) {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		if !g.rateLimit(w, r, "mcp:"+tenant+":hub") {
+			return
+		}
 		g.handleHub(w, r, tenant)
+		return
+	}
+	if !g.authenticateRoute(r, tenant) {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if !g.rateLimit(w, r, "mcp:"+tenant+":"+component) {
 		return
 	}
 	g.mu.RLock()

@@ -62,3 +62,9 @@ func TestHTTPConnectorRejectsUntrustedHost(t *testing.T) {
 		t.Fatal("expected untrusted host to be rejected")
 	}
 }
+
+func TestHTTPConnectorRejectsMetadataAddress(t *testing.T) {
+	if _, err := NewHTTPConnector(HTTPConfig{Name: "x", URL: "http://169.254.169.254/latest"}); err == nil {
+		t.Fatal("expected metadata address to be rejected")
+	}
+}

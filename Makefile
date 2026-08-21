@@ -3,8 +3,8 @@ SHELL := /bin/sh
 GATEWAY_ADDR ?= :3080
 ADMIN_DIR := web/admin
 COMPOSE_FILE := deploy/docker-compose.dev.yml
-DATABASE_URL ?= postgres://mcphub:mcphub@127.0.0.1:5432/mcphub?sslmode=disable
-REDIS_URL ?= redis://127.0.0.1:6379/0
+DATABASE_URL ?= postgres://mcphub:mcphub@127.0.0.1:15432/mcphub?sslmode=disable
+REDIS_URL ?= redis://127.0.0.1:16379/0
 
 .PHONY: help install test vet build build-admin gateway connect-daemon admin dev infra-up infra-down infra-logs migrate clean
 

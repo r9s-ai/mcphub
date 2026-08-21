@@ -5,7 +5,7 @@ services:
       POSTGRES_DB: mcphub
       POSTGRES_USER: mcphub
       POSTGRES_PASSWORD: mcphub
-    ports: ["5432:5432"]
+    ports: ["15432:5432"]
     volumes: ["mcphub-postgres:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcphub -d mcphub"]
@@ -14,7 +14,7 @@ services:
       retries: 20
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["16379:6379"]
     volumes: ["mcphub-redis:/data"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

@@ -29,6 +29,8 @@ GET    /api/admin/groups/{group_id}/tools
 POST   /api/admin/groups/{group_id}/tools
 DELETE /api/admin/groups/{group_id}/tools/{component_id}/{tool_name}
 POST   /api/admin/catalog/components/{component_id}/refresh
+GET    /api/admin/tokens/{token_id}/groups
+PUT    /api/admin/tokens/{token_id}/groups
 ```
 
 When a component registers, the Gateway requests `tools/list` over the tunnel
@@ -38,6 +40,13 @@ simply omitted from discovery results until they return.
 
 PostgreSQL migrations define durable `tool_catalog`, `tool_groups`,
 `group_tools`, and `token_groups` tables. PostgreSQL access-token validation
-now returns the token default group and authorized groups. The remaining work
-is to replace the in-memory Discovery service with a repository backed by
-these tables, add Redis catalog caching/locks, and complete the Admin UI.
+now returns the token default group and authorized groups. With PostgreSQL
+enabled, the Discovery service uses these tables for group CRUD, tool bindings,
+and catalog replacement. Redis-backed deployments also use catalog cache
+entries and a short-lived per-component refresh lock. The remaining product
+work is the Admin UI for these management operations and token/group
+assignment screens.
+
+Token group administration uses the stored token identifier (the SHA-256
+token hash), never the plaintext access token. The response only contains the
+tenant, default group, and authorized group IDs.

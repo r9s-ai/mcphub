@@ -50,6 +50,11 @@ type GroupAuthStore interface {
 	TokenGroups(context.Context, string) (TokenIdentity, error)
 }
 
+type TokenGroupStore interface {
+	SetTokenGroups(context.Context, string, string, []string) error
+	GetTokenGroups(context.Context, string, string) (TokenIdentity, error)
+}
+
 type PresenceStore interface {
 	SetConnectHeartbeat(context.Context, string, string, time.Duration) error
 	SetComponentHeartbeat(context.Context, string, string, string, time.Duration) error
@@ -60,6 +65,12 @@ type PresenceStore interface {
 	Allow(context.Context, string, int, time.Duration) (bool, error)
 	MarkTokenRevoked(context.Context, string, time.Duration) error
 	TokenRevoked(context.Context, string) (bool, error)
+}
+
+type CatalogCache interface {
+	GetCatalog(context.Context, string, string) ([]byte, error)
+	SetCatalog(context.Context, string, string, []byte, time.Duration) error
+	TryCatalogLock(context.Context, string, string, time.Duration) (bool, error)
 }
 
 type AuditEvent struct {

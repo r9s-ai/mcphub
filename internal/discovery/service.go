@@ -52,16 +52,35 @@ type InvokeRequest struct {
 }
 type Invoker func(context.Context, string, string, string, map[string]any) (any, error)
 
+// Store is the persistence boundary for groups and the tool catalog. The
+// in-memory maps remain the default so the Gateway can run without services.
+type Store interface {
+	ListGroups(context.Context, string) ([]Group, error)
+	CreateGroup(context.Context, string, Group) error
+	UpdateGroup(context.Context, string, Group) error
+	DeleteGroup(context.Context, string, string) error
+	ListGroupTools(context.Context, string, string) ([]Tool, error)
+	AttachTool(context.Context, string, string, Tool) error
+	DetachTool(context.Context, string, string, string, string) error
+	ReplaceTools(context.Context, string, string, []Tool) error
+}
+
 type Service struct {
 	mu          sync.RWMutex
 	groups      map[string]map[string]Group
 	tools       map[string]map[string]Tool
 	memberships map[string]map[string]map[string]bool
 	invoke      Invoker
+	backend     Store
 }
 
 func New(invoker Invoker) *Service {
 	return &Service{groups: map[string]map[string]Group{}, tools: map[string]map[string]Tool{}, memberships: map[string]map[string]map[string]bool{}, invoke: invoker}
+}
+func NewWithStore(invoker Invoker, backend Store) *Service {
+	s := New(invoker)
+	s.backend = backend
+	return s
 }
 func (s *Service) EnsureDefault(tenant string) {
 	s.mu.Lock()
@@ -74,6 +93,11 @@ func (s *Service) EnsureDefault(tenant string) {
 	}
 }
 func (s *Service) UpsertGroup(tenant string, g Group) error {
+	if s.backend != nil {
+		if err := s.backend.CreateGroup(context.Background(), tenant, g); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.groups[tenant] == nil {
@@ -88,6 +112,11 @@ func (s *Service) UpsertGroup(tenant string, g Group) error {
 	return nil
 }
 func (s *Service) UpdateGroup(tenant string, g Group) error {
+	if s.backend != nil {
+		if err := s.backend.UpdateGroup(context.Background(), tenant, g); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.groups[tenant][g.ID]; !ok {
@@ -102,6 +131,11 @@ func (s *Service) UpdateGroup(tenant string, g Group) error {
 	return nil
 }
 func (s *Service) DeleteGroup(tenant, id string) error {
+	if s.backend != nil {
+		if err := s.backend.DeleteGroup(context.Background(), tenant, id); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.groups[tenant][id]; !ok {
@@ -114,6 +148,26 @@ func (s *Service) DeleteGroup(tenant, id string) error {
 	return nil
 }
 func (s *Service) GroupTools(tenant, group string) ([]Tool, error) {
+	if s.backend != nil {
+		if tools, err := s.backend.ListGroupTools(context.Background(), tenant, group); err == nil {
+			s.mu.Lock()
+			if s.tools[tenant] == nil {
+				s.tools[tenant] = map[string]Tool{}
+			}
+			if s.memberships[tenant] == nil {
+				s.memberships[tenant] = map[string]map[string]bool{}
+			}
+			if s.memberships[tenant][group] == nil {
+				s.memberships[tenant][group] = map[string]bool{}
+			}
+			for _, t := range tools {
+				key := t.ComponentID + ":" + t.Name
+				s.tools[tenant][key] = t
+				s.memberships[tenant][group][key] = true
+			}
+			s.mu.Unlock()
+		}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if _, ok := s.groups[tenant][group]; !ok {
@@ -129,6 +183,11 @@ func (s *Service) GroupTools(tenant, group string) ([]Tool, error) {
 	return out, nil
 }
 func (s *Service) AttachTool(tenant, group string, t Tool) error {
+	if s.backend != nil {
+		if err := s.backend.AttachTool(context.Background(), tenant, group, t); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.groups[tenant][group]; !ok {
@@ -148,6 +207,11 @@ func (s *Service) AttachTool(tenant, group string, t Tool) error {
 	return nil
 }
 func (s *Service) DetachTool(tenant, group, component, tool string) error {
+	if s.backend != nil {
+		if err := s.backend.DetachTool(context.Background(), tenant, group, component, tool); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.groups[tenant][group]; !ok {
@@ -174,6 +238,9 @@ func (s *Service) AddTool(tenant, group string, t Tool) {
 	s.memberships[tenant][group][key] = true
 }
 func (s *Service) ReplaceTools(tenant, component string, tools []Tool) {
+	if s.backend != nil {
+		_ = s.backend.ReplaceTools(context.Background(), tenant, component, tools)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.tools[tenant] == nil {
@@ -286,6 +353,18 @@ func (s *Service) SetGroup(id Identity, group string) (Identity, Group, error) {
 	return id, g, nil
 }
 func (s *Service) ListGroups(tenant string) []Group {
+	if s.backend != nil {
+		if groups, err := s.backend.ListGroups(context.Background(), tenant); err == nil {
+			s.mu.Lock()
+			if s.groups[tenant] == nil {
+				s.groups[tenant] = map[string]Group{}
+			}
+			for _, g := range groups {
+				s.groups[tenant][g.ID] = g
+			}
+			s.mu.Unlock()
+		}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Group, 0, len(s.groups[tenant]))

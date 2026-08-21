@@ -105,6 +105,7 @@ type Gateway struct {
 	authStore     store.AuthStore
 	connectStore  store.ConnectStore
 	presenceStore store.PresenceStore
+	catalogCache  store.CatalogCache
 	auditStore    store.AuditStore
 	discovery     *discovery.Service
 	hubSessions   sync.Map
@@ -131,8 +132,16 @@ func NewWithStores(connectToken, publicURL string, cs store.ConnectStore, ps sto
 	if v, ok := cs.(store.AuditStore); ok {
 		audit = v
 	}
-	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: deviceAuth, authStore: as, connectStore: cs, presenceStore: ps, auditStore: audit, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
-	g.discovery = discovery.New(g.invokeTool)
+	var cc store.CatalogCache
+	if v, ok := ps.(store.CatalogCache); ok {
+		cc = v
+	}
+	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: deviceAuth, authStore: as, connectStore: cs, presenceStore: ps, catalogCache: cc, auditStore: audit, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	if ds, ok := cs.(discovery.Store); ok {
+		g.discovery = discovery.NewWithStore(g.invokeTool, ds)
+	} else {
+		g.discovery = discovery.New(g.invokeTool)
+	}
 	if cs != nil {
 		go g.restore(context.Background())
 	}
@@ -187,10 +196,67 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/mcp/", g.handleMCP)
 	mux.HandleFunc("/tunnel", g.handleTunnel)
 	mux.HandleFunc("/api/admin/catalog/components/", g.handleCatalogRefresh)
+	mux.HandleFunc("/api/admin/tokens/", g.handleTokenGroups)
 	admin.New(g.registry).Register(mux)
 	admin.NewDiscovery(g.discovery).Register(mux)
 	g.deviceAuth.Register(mux)
 	return mux
+}
+
+func (g *Gateway) handleTokenGroups(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/tokens/"), "/"), "/")
+	if len(parts) != 2 || parts[1] != "groups" {
+		http.NotFound(w, r)
+		return
+	}
+	backend, ok := g.authStore.(store.TokenGroupStore)
+	if !ok {
+		http.Error(w, "token group storage unavailable", http.StatusNotImplemented)
+		return
+	}
+	tenant := r.URL.Query().Get("tenant_id")
+	if tenant == "" {
+		tenant = "demo"
+	}
+	tokenID := parts[0]
+	switch r.Method {
+	case http.MethodGet:
+		id, err := backend.GetTokenGroups(r.Context(), tenant, tokenID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"tenant_id": id.TenantID, "default_group_id": id.DefaultGroupID, "group_ids": id.AllowedGroupIDs})
+	case http.MethodPut:
+		var in struct {
+			DefaultGroupID string   `json:"default_group_id"`
+			GroupIDs       []string `json:"group_ids"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil {
+			http.Error(w, "invalid request", 400)
+			return
+		}
+		groups := in.GroupIDs
+		if in.DefaultGroupID != "" {
+			found := false
+			for _, v := range groups {
+				if v == in.DefaultGroupID {
+					found = true
+				}
+			}
+			if !found {
+				groups = append([]string{in.DefaultGroupID}, groups...)
+			}
+		}
+		if err := backend.SetTokenGroups(r.Context(), tenant, tokenID, groups); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (g *Gateway) handleCatalogRefresh(w http.ResponseWriter, r *http.Request) {

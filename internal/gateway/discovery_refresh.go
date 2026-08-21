@@ -9,6 +9,18 @@ import (
 )
 
 func (g *Gateway) refreshDiscovery(tenant, component string, s *session) {
+	if g.catalogCache != nil {
+		locked, err := g.catalogCache.TryCatalogLock(context.Background(), tenant, component, 30*time.Second)
+		if err == nil && !locked {
+			if cached, e := g.catalogCache.GetCatalog(context.Background(), tenant, component); e == nil && len(cached) > 0 {
+				var tools []discovery.Tool
+				if json.Unmarshal(cached, &tools) == nil {
+					g.discovery.ReplaceTools(tenant, component, tools)
+				}
+			}
+			return
+		}
+	}
 	payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "catalog", "method": "tools/list", "params": map[string]any{}})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -31,4 +43,9 @@ func (g *Gateway) refreshDiscovery(tenant, component string, s *session) {
 		return
 	}
 	g.discovery.ReplaceTools(tenant, component, envelope.Result.Tools)
+	if g.catalogCache != nil {
+		if cached, err := json.Marshal(envelope.Result.Tools); err == nil {
+			_ = g.catalogCache.SetCatalog(context.Background(), tenant, component, cached, 10*time.Minute)
+		}
+	}
 }

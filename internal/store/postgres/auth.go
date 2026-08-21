@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/r9s-ai/mcphub/internal/store"
@@ -127,6 +128,52 @@ func (s *ConnectStore) ValidateAccessToken(ctx context.Context, tokenHash string
 func (s *ConnectStore) TokenGroups(ctx context.Context, tokenHash string) (store.TokenIdentity, error) {
 	return s.ValidateAccessToken(ctx, tokenHash, time.Now())
 }
+
+func (s *ConnectStore) SetTokenGroups(ctx context.Context, tenant, tokenHash string, groups []string) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if len(groups) == 0 {
+		return ErrAuthInvalid
+	}
+	if _, err = tx.Exec(ctx, `UPDATE auth_tokens SET default_group_id=$3 WHERE token_hash=$1 AND tenant_id=$2`, tokenHash, tenant, groups[0]); err != nil {
+		return err
+	}
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth_tokens WHERE token_hash=$1 AND tenant_id=$2)`, tokenHash, tenant).Scan(&exists); err != nil || !exists {
+		return ErrAuthInvalid
+	}
+	for _, group := range groups {
+		var ok bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tool_groups WHERE tenant_id=$1 AND id=$2)`, tenant, group).Scan(&ok); err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("group_not_found")
+		}
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM token_groups WHERE token_hash=$1 AND tenant_id=$2`, tokenHash, tenant); err != nil {
+		return err
+	}
+	for _, group := range groups {
+		if _, err = tx.Exec(ctx, `INSERT INTO token_groups(token_hash,tenant_id,group_id) VALUES($1,$2,$3)`, tokenHash, tenant, group); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+func (s *ConnectStore) GetTokenGroups(ctx context.Context, tenant, tokenHash string) (store.TokenIdentity, error) {
+	id, err := s.ValidateAccessToken(ctx, tokenHash, time.Now())
+	if err != nil {
+		return store.TokenIdentity{}, err
+	}
+	if id.TenantID != tenant {
+		return store.TokenIdentity{}, ErrAuthInvalid
+	}
+	return id, nil
+}
 func hashToken(v string) string {
 	b := sha256.Sum256([]byte(v))
 	return base64.RawURLEncoding.EncodeToString(b[:])
@@ -134,3 +181,4 @@ func hashToken(v string) string {
 
 var _ store.AuthStore = (*ConnectStore)(nil)
 var _ store.GroupAuthStore = (*ConnectStore)(nil)
+var _ store.TokenGroupStore = (*ConnectStore)(nil)

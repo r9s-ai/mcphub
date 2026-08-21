@@ -69,4 +69,25 @@ func (s *PresenceStore) TokenRevoked(ctx context.Context, hash string) (bool, er
 	return n > 0, err
 }
 
+func catalogKey(prefix, tenant, component string) string {
+	return prefix + ":catalog:" + tenant + ":" + component
+}
+func catalogLockKey(prefix, tenant, component string) string {
+	return prefix + ":lock:catalog:" + tenant + ":" + component
+}
+func (s *PresenceStore) GetCatalog(ctx context.Context, tenant, component string) ([]byte, error) {
+	v, err := s.Client.Get(ctx, catalogKey(s.Prefix, tenant, component)).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	return v, err
+}
+func (s *PresenceStore) SetCatalog(ctx context.Context, tenant, component string, value []byte, ttl time.Duration) error {
+	return s.Client.Set(ctx, catalogKey(s.Prefix, tenant, component), value, ttl).Err()
+}
+func (s *PresenceStore) TryCatalogLock(ctx context.Context, tenant, component string, ttl time.Duration) (bool, error) {
+	return s.Client.SetNX(ctx, catalogLockKey(s.Prefix, tenant, component), "1", ttl).Result()
+}
+
 var _ store.PresenceStore = (*PresenceStore)(nil)
+var _ store.CatalogCache = (*PresenceStore)(nil)

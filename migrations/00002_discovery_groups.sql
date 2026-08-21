@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS group_tools (
   tool_name TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, group_id, component_id, tool_name),
-  FOREIGN KEY (tenant_id, group_id) REFERENCES tool_groups(tenant_id, id),
+  FOREIGN KEY (tenant_id, group_id) REFERENCES tool_groups(tenant_id, id) ON DELETE CASCADE,
   FOREIGN KEY (tenant_id, component_id, tool_name) REFERENCES tool_catalog(tenant_id, component_id, tool_name)
 );
 
@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS token_groups (
   group_id TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (token_hash, tenant_id, group_id),
-  FOREIGN KEY (tenant_id, group_id) REFERENCES tool_groups(tenant_id, id)
+  FOREIGN KEY (tenant_id, group_id) REFERENCES tool_groups(tenant_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (token_hash) REFERENCES auth_tokens(token_hash) ON DELETE CASCADE
 );
 
 ALTER TABLE auth_tokens ADD COLUMN IF NOT EXISTS default_group_id TEXT NOT NULL DEFAULT 'default';

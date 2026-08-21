@@ -34,13 +34,26 @@ func TestGatewayForwardsStreamingFrames(t *testing.T) {
 		}
 		result <- res
 	}()
-	_, raw, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatal(err)
-	}
 	var req protocol.Frame
-	if err := json.Unmarshal(raw, &req); err != nil {
-		t.Fatal(err)
+	for {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatal(err)
+		}
+		var rpc struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(req.Payload, &rpc)
+		if rpc.Method == "tools/list" {
+			if err := conn.WriteJSON(protocol.Frame{Type: "response", StreamID: req.StreamID, Status: 200, Payload: []byte(`{"jsonrpc":"2.0","id":"catalog","result":{"tools":[]}}`), EndOfStream: true}); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		break
 	}
 	if req.Type != "request" {
 		t.Fatalf("expected request, got %s", req.Type)

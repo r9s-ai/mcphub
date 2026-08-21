@@ -6,14 +6,15 @@ COMPOSE_FILE := deploy/docker-compose.dev.yml
 DATABASE_URL ?= postgres://mcphub:mcphub@127.0.0.1:15432/mcphub?sslmode=disable
 REDIS_URL ?= redis://127.0.0.1:16379/0
 
-.PHONY: help install test vet build build-admin gateway connect-daemon admin dev infra-up infra-down infra-logs migrate clean
+.PHONY: help install test vet check build build-admin gateway connect-daemon admin dev infra-up infra-down infra-logs migrate clean
 
 help:
 	@printf '%s\n' \
 		'make install      Install Admin dependencies' \
 		'make test         Run Go tests' \
 		'make vet          Run go vet' \
-		'make build        Build Gateway and mcp-connect binaries' \
+		'make check        Run Go checks and build the Web application' \
+		'make build        Build Gateway, mcp-connect, and the Web application' \
 		'make build-admin  Build the Admin frontend' \
 		'make gateway      Start the MCP Gateway' \
 		'make connect-daemon Start the mcp-connect daemon' \
@@ -24,7 +25,7 @@ help:
 		'make dev          Start Gateway and Admin together'
 
 install:
-	cd $(ADMIN_DIR) && pnpm install --ignore-scripts
+	cd $(ADMIN_DIR) && pnpm --ignore-workspace install --ignore-scripts
 
 test:
 	go test ./...
@@ -32,11 +33,13 @@ test:
 vet:
 	go vet ./...
 
-build:
+check: test vet build-admin
+
+build: build-admin
 	go build ./cmd/mcp-gateway ./cmd/mcp-connect
 
 build-admin:
-	cd $(ADMIN_DIR) && pnpm build
+	cd $(ADMIN_DIR) && pnpm --ignore-workspace build
 
 gateway:
 	go run ./cmd/mcp-gateway --addr $(GATEWAY_ADDR)
@@ -57,14 +60,14 @@ connect-daemon:
 	go run ./cmd/mcp-connect daemon
 
 admin:
-	cd $(ADMIN_DIR) && pnpm dev
+	cd $(ADMIN_DIR) && pnpm --ignore-workspace dev
 
 dev: install infra-up
 	@set -eu; \
 	trap 'kill 0 2>/dev/null || true' INT TERM EXIT; \
 	MCP_STORAGE=postgres DATABASE_URL=$(DATABASE_URL) REDIS_URL=$(REDIS_URL) go run ./cmd/mcp-gateway --addr $(GATEWAY_ADDR) & \
 	GATEWAY_PID=$$!; \
-	(cd $(ADMIN_DIR) && pnpm dev) & \
+	(cd $(ADMIN_DIR) && pnpm --ignore-workspace dev) & \
 	ADMIN_PID=$$!; \
 	wait $$GATEWAY_PID $$ADMIN_PID
 

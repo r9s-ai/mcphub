@@ -1,6 +1,8 @@
 # MCPHub
 
-MCPHub is a local MCP connector and cloud Gateway. It supports local stdio MCP servers and already-running Streamable HTTP MCP servers over a shared WebSocket tunnel.
+MCPHub is a local MCP connector and cloud Gateway. It connects local stdio and Streamable HTTP MCP servers through a shared WebSocket tunnel, then provides tenant-aware routing, Group-scoped authorization, and context-efficient Dynamic Discovery to MCP clients.
+
+**Connect local. Govern globally.**
 
 ## Architecture
 
@@ -44,7 +46,18 @@ The Gateway is the public control and data-plane entry point. It is responsible 
 
 Each `mcp-connect` instance manages local MCP components. Components may be stdio processes or already-running Streamable HTTP MCP servers. The same tunnel carries requests to multiple components and returns responses to the originating MCP client.
 
-The current release implements the tunnel, routing, registration, heartbeat, and Admin observability foundation. Auth, RBAC, policy enforcement, rate limiting, audit persistence, and full observability are reserved for subsequent releases.
+The current release implements the tunnel, routing, registration, heartbeat, persistent Group and Token state, tenant-aware route authentication, rate limiting, audit persistence foundation, and Dynamic Discovery. Full enterprise RBAC, OAuth, policy workflows, and complete observability remain subsequent work.
+
+## Dynamic Discovery
+
+The virtual Hub endpoint at `/mcp/{tenant}/hub` keeps client context small. Instead of exposing every upstream Tool Schema during initialization, it exposes four stable meta-tools:
+
+- `mcphub_search`: find relevant tools in the active authorized Group.
+- `mcphub_get`: load one Tool Schema only when it is needed.
+- `mcphub_invoke`: invoke the selected upstream tool through the Gateway.
+- `mcphub_set_group`: switch between Groups allowed for the current Token.
+
+This search → schema → invoke flow lets one Hub aggregate a large catalog without placing the complete catalog in every Agent request.
 
 ## Quick start
 
@@ -125,7 +138,11 @@ POST http://127.0.0.1:3080/mcp/demo/remote-tools
 
 Component names are unique within a tenant. Registering the same name from another connection is rejected instead of replacing the existing route.
 
-## Admin center
+## Web and Admin center
+
+The Gateway serves the public MCPHub landing page at `/` and the management application under `/admin` from `web/admin/dist` by default. Override the production build directory with `MCP_WEB_DIR`.
+
+When `MCP_ADMIN_TOKEN` is configured, open `/admin/login` and enter the Token. The browser stores it only in the current tab and sends it as a Bearer credential to Admin APIs. Without `MCP_ADMIN_TOKEN`, the UI detects development mode and enters the console directly.
 
 The read-only Admin API is available at:
 
@@ -142,7 +159,13 @@ make install
 make admin
 ```
 
-Open `http://127.0.0.1:3081/admin`. The dashboard polls status every five seconds and currently uses an in-memory registry without Admin authentication.
+During Vite development, open `http://127.0.0.1:3081/`; API and MCP requests are proxied to the Gateway. For a production-style local run, build the Web application and open the Gateway directly:
+
+```bash
+make build-admin
+make gateway
+# http://127.0.0.1:3080/
+```
 
 The Admin frontend uses [pnpm](https://pnpm.io/). Install pnpm before running the frontend commands. The Makefile uses `pnpm install --ignore-scripts` because the Admin bundle does not require dependency build scripts.
 

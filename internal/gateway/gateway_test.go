@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,5 +100,41 @@ func TestGatewayRejectsInvalidConnectToken(t *testing.T) {
 	}
 	if frame.Type != "error" {
 		t.Fatalf("expected error frame, got %q", frame.Type)
+	}
+}
+
+func TestGatewayServesLandingAndAdminDeepLinks(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(webDir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<title>MCPHub</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "assets", "app.js"), []byte("console.log('mcphub')"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := New()
+	g.webDir = webDir
+	handler := g.Handler()
+	for _, path := range []string{"/", "/admin", "/admin/components/example"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "MCPHub") {
+			t.Fatalf("expected web app for %s, got %d: %s", path, response.Code, response.Body.String())
+		}
+		if response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("Cache-Control") != "no-cache" {
+			t.Fatalf("missing web security headers for %s", path)
+		}
+	}
+	asset := httptest.NewRecorder()
+	handler.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if asset.Code != http.StatusOK || !strings.Contains(asset.Body.String(), "mcphub") || !strings.Contains(asset.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("unexpected asset response: %d %s", asset.Code, asset.Body.String())
+	}
+	unknownAPI := httptest.NewRecorder()
+	handler.ServeHTTP(unknownAPI, httptest.NewRequest(http.MethodGet, "/api/not-a-route", nil))
+	if unknownAPI.Code != http.StatusNotFound || strings.Contains(unknownAPI.Body.String(), "MCPHub") {
+		t.Fatalf("unknown API route must not be handled by SPA: %d %s", unknownAPI.Code, unknownAPI.Body.String())
 	}
 }

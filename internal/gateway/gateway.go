@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -111,6 +112,7 @@ type Gateway struct {
 	discovery     *discovery.Service
 	hubSessions   sync.Map
 	localLimiter  *localLimiter
+	webDir        string
 }
 
 func routeKey(tenant, component string) string { return tenant + ":" + component }
@@ -138,7 +140,11 @@ func NewWithStores(connectToken, publicURL string, cs store.ConnectStore, ps sto
 	if v, ok := ps.(store.CatalogCache); ok {
 		cc = v
 	}
-	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: deviceAuth, authStore: as, connectStore: cs, presenceStore: ps, catalogCache: cc, auditStore: audit, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	webDir := strings.TrimSpace(os.Getenv("MCP_WEB_DIR"))
+	if webDir == "" {
+		webDir = "web/admin/dist"
+	}
+	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: deviceAuth, authStore: as, connectStore: cs, presenceStore: ps, catalogCache: cc, auditStore: audit, webDir: webDir, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
 	if ds, ok := cs.(discovery.Store); ok {
 		g.discovery = discovery.NewWithStore(g.invokeTool, ds)
 	} else {
@@ -207,7 +213,61 @@ func (g *Gateway) Handler() http.Handler {
 	})
 	mux.HandleFunc("/metrics", g.handleMetrics)
 	g.deviceAuth.Register(mux)
+	mux.HandleFunc("/assets/", g.handleWebAsset)
+	mux.HandleFunc("/brand/", g.handleWebAsset)
+	mux.HandleFunc("/admin", g.handleWebApp)
+	mux.HandleFunc("/admin/", g.handleWebApp)
+	mux.HandleFunc("/", g.handleWebApp)
 	return g.adminAuth(mux)
+}
+
+const webContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+func (g *Gateway) handleWebApp(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Path != "/" && r.URL.Path != "/admin" && !strings.HasPrefix(r.URL.Path, "/admin/") {
+		http.NotFound(w, r)
+		return
+	}
+	index := filepath.Join(g.webDir, "index.html")
+	if info, err := os.Stat(index); err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Security-Policy", webContentSecurityPolicy)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	http.ServeFile(w, r, index)
+}
+
+func (g *Gateway) handleWebAsset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.NotFound(w, r)
+		return
+	}
+	requested := strings.TrimPrefix(r.URL.Path, "/")
+	if requested == "" || strings.Contains(requested, "..") || (!strings.HasPrefix(requested, "assets/") && !strings.HasPrefix(requested, "brand/")) {
+		http.NotFound(w, r)
+		return
+	}
+	target := filepath.Join(g.webDir, filepath.FromSlash(requested))
+	info, err := os.Stat(target)
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	if strings.HasPrefix(requested, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, target)
 }
 
 func (g *Gateway) handleMetrics(w http.ResponseWriter, r *http.Request) {

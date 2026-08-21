@@ -2,6 +2,50 @@
 
 MCPHub is a local MCP connector and cloud Gateway. It supports local stdio MCP servers and already-running Streamable HTTP MCP servers over a shared WebSocket tunnel.
 
+## Architecture
+
+```text
+                         MCP Clients
+                              │
+            ┌─────────────────┼──────────────────┐
+            │                 │                  │
+         Claude             Codex              Agent
+            │                 │                  │
+            └─────────────────┼──────────────────┘
+                              │
+                              ▼
+                     ┌──────────────────┐
+                     │   MCP Gateway    │
+                     │                  │
+                     │ Auth             │
+                     │ RBAC             │
+                     │ Policy           │
+                     │ Routing          │
+                     │ Rate Limit       │
+                     │ Audit            │
+                     │ Observability    │
+                     └────────┬─────────┘
+                              │
+                       MCP Tunnel
+                              │
+             ┌────────────────┼────────────────┐
+             │                │                │
+             ▼                ▼                ▼
+        User Laptop        Server          Enterprise
+             │                │                │
+         MCP Agent        MCP Agent       MCP Agent
+             │                │                │
+        ┌────┼────┐       ┌───┼───┐       ┌───┼───┐
+        ▼    ▼    ▼       ▼   ▼   ▼       ▼   ▼   ▼
+       Git   DB  File    K8s  DB  Git    Jira DB  Git
+```
+
+The Gateway is the public control and data-plane entry point. It is responsible for request routing, authentication, policy enforcement, auditing, and operational visibility. A persistent MCP Tunnel connects the Gateway to one or more `mcp-connect` instances running in user laptops, servers, or enterprise environments.
+
+Each `mcp-connect` instance manages local MCP components. Components may be stdio processes or already-running Streamable HTTP MCP servers. The same tunnel carries requests to multiple components and returns responses to the originating MCP client.
+
+The current release implements the tunnel, routing, registration, heartbeat, and Admin observability foundation. Auth, RBAC, policy enforcement, rate limiting, audit persistence, and full observability are reserved for subsequent releases.
+
 ## Quick start
 
 Start the Gateway:

@@ -3,7 +3,7 @@ SHELL := /bin/sh
 GATEWAY_ADDR ?= :3080
 ADMIN_DIR := web/admin
 
-.PHONY: help install test vet build build-admin gateway admin dev clean
+.PHONY: help install test vet build build-admin gateway connect-daemon admin dev clean
 
 help:
 	@printf '%s\n' \
@@ -13,6 +13,7 @@ help:
 		'make build        Build Gateway and mcp-connect binaries' \
 		'make build-admin  Build the Admin frontend' \
 		'make gateway      Start the MCP Gateway' \
+		'make connect-daemon Start the mcp-connect daemon' \
 		'make admin        Start the Admin frontend' \
 		'make dev          Start Gateway and Admin together'
 
@@ -33,6 +34,9 @@ build-admin:
 
 gateway:
 	go run ./cmd/mcp-gateway --addr $(GATEWAY_ADDR)
+
+connect-daemon:
+	go run ./cmd/mcp-connect daemon
 
 admin:
 	cd $(ADMIN_DIR) && pnpm dev

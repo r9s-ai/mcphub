@@ -28,3 +28,10 @@ type Connector interface {
 	Health(context.Context) error
 	Metadata() ComponentMetadata
 }
+
+// StreamConnector is implemented by connectors that can emit incremental MCP
+// response chunks (for example Streamable HTTP/SSE).
+type StreamConnector interface {
+	Connector
+	HandleStream(context.Context, *MCPRequest, func(*MCPResponse) error) error
+}

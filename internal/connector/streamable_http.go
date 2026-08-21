@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -74,9 +75,30 @@ func (c *HTTPConnector) Metadata() ComponentMetadata {
 	return ComponentMetadata{Name: c.cfg.Name, Transport: "streamable-http", URL: c.cfg.URL}
 }
 func (c *HTTPConnector) Handle(ctx context.Context, in *MCPRequest) (*MCPResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.URL, strings.NewReader(string(in.Payload)))
+	var body bytes.Buffer
+	var first *MCPResponse
+	err := c.HandleStream(ctx, in, func(res *MCPResponse) error {
+		if first == nil {
+			first = res
+		}
+		body.Write(res.Payload)
+		return nil
+	})
 	if err != nil {
 		return nil, err
+	}
+	if first == nil {
+		return &MCPResponse{Status: 204, EndOfStream: true}, nil
+	}
+	first.Payload = body.Bytes()
+	first.EndOfStream = true
+	return first, nil
+}
+
+func (c *HTTPConnector) HandleStream(ctx context.Context, in *MCPRequest, emit func(*MCPResponse) error) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.URL, strings.NewReader(string(in.Payload)))
+	if err != nil {
+		return err
 	}
 	for k, v := range c.cfg.Headers {
 		req.Header.Set(k, v)
@@ -94,18 +116,39 @@ func (c *HTTPConnector) Handle(ctx context.Context, in *MCPRequest) (*MCPRespons
 	}
 	res, err := c.client.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
 	h := map[string]string{}
 	for _, k := range []string{"Content-Type", "Mcp-Session-Id", "Cache-Control"} {
 		if v := res.Header.Get(k); v != "" {
 			h[k] = v
 		}
 	}
-	return &MCPResponse{Status: res.StatusCode, Headers: h, Payload: body, EndOfStream: true}, nil
+	buf := make([]byte, 32*1024)
+	first := true
+	for {
+		n, readErr := res.Body.Read(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			out := &MCPResponse{Status: res.StatusCode, Headers: h, Payload: chunk, EndOfStream: false}
+			if !first {
+				out.Headers = nil
+			}
+			first = false
+			if err := emit(out); err != nil {
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	if first {
+		return emit(&MCPResponse{Status: res.StatusCode, Headers: h, EndOfStream: true})
+	}
+	return emit(&MCPResponse{EndOfStream: true})
 }

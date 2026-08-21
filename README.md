@@ -54,6 +54,13 @@ Start the Gateway:
 make gateway
 ```
 
+For development, Connect authentication is disabled by default. To require a shared registration token:
+
+```bash
+MCP_GATEWAY_CONNECT_TOKEN=change-me make gateway
+mcp-connect login --token change-me
+```
+
 Proxy a Streamable HTTP MCP server:
 
 ```bash
@@ -76,11 +83,47 @@ go run ./cmd/mcp-connect \
   --command "node ./mock-mcp.js"
 ```
 
+For local multi-component management, run the single CLI in daemon mode:
+
+```bash
+mcp-connect daemon --gateway ws://127.0.0.1:3080/tunnel --connect-name my-laptop
+mcp-connect add github --transport stdio --command "npx @modelcontextprotocol/server-github"
+mcp-connect add remote-tools --transport streamable-http --url http://127.0.0.1:8080/mcp
+mcp-connect list
+mcp-connect status
+mcp-connect test remote-tools
+mcp-connect disable github
+mcp-connect enable github
+mcp-connect remove remote-tools
+```
+
+The daemon stores its configuration under the platform user config directory and exposes a local Unix Socket control API. The existing flag-based one-component invocation remains supported for compatibility.
+
+`login` can bootstrap the same daemon automatically:
+
+```bash
+mcp-connect login --gateway ws://127.0.0.1:3080/tunnel --connect-name my-laptop
+```
+
+Without `--token`, the CLI starts the Device Code flow, prints a verification URL and user code, and polls until browser confirmation is complete. The current development Gateway keeps device approvals in memory and uses a minimal confirmation page; production authentication and secure credential storage remain follow-up work.
+
+Install a user-level daemon service on macOS or Linux:
+
+```bash
+mcp-connect install-service
+# Linux: optionally enable and start immediately
+mcp-connect install-service --start
+```
+
+Remove the generated service file with `mcp-connect uninstall-service`.
+
 The public MCP endpoint is:
 
 ```text
 POST http://127.0.0.1:3080/mcp/demo/remote-tools
 ```
+
+Component names are unique within a tenant. Registering the same name from another connection is rejected instead of replacing the existing route.
 
 ## Admin center
 
@@ -118,10 +161,12 @@ cmd/          Executable entrypoints
 internal/     Gateway, connector, registry, and Admin implementation
 pkg/          Shared wire protocol
 web/admin/    React + TypeScript Admin application
-docs/         English architecture and API documentation
+docs/         English architecture, API, protocol, and roadmap documentation
 deploy/       Deployment assets
 ```
 
 ## Current scope
 
 This repository contains the Phase 0/Phase 1 foundation. Device authentication, PostgreSQL persistence, rate limiting, OAuth, and production Admin authorization are planned follow-up work. Streamable HTTP upstreams are restricted to loopback addresses unless an explicit `--allow-host` value is supplied.
+
+See [`docs/roadmap.md`](docs/roadmap.md) for the detailed implementation status and next steps.

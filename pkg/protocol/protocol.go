@@ -16,6 +16,8 @@ type Frame struct {
 	Error         string            `json:"error,omitempty"`
 	Protocol      string            `json:"protocol,omitempty"`
 	ConnectID     string            `json:"connect_id,omitempty"`
+	TenantID      string            `json:"tenant_id,omitempty"`
+	GatewayToken  string            `json:"gateway_token,omitempty"`
 	ConnectName   string            `json:"connect_name,omitempty"`
 	Version       string            `json:"version,omitempty"`
 	ComponentName string            `json:"component_name,omitempty"`

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestHTTPConnectorProxy(t *testing.T) {
@@ -28,6 +29,31 @@ func TestHTTPConnectorProxy(t *testing.T) {
 	}
 	if r.Status != 200 || string(r.Payload) != "data: ok\n\n" || r.Headers["Mcp-Session-Id"] != "s2" {
 		t.Fatalf("bad response: %#v", r)
+	}
+}
+
+func TestHTTPConnectorHandleStreamEmitsChunks(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: one\n\n"))
+		f.Flush()
+		time.Sleep(5 * time.Millisecond)
+		_, _ = w.Write([]byte("data: two\n\n"))
+		f.Flush()
+	}))
+	defer ts.Close()
+	c, err := NewHTTPConnector(HTTPConfig{Name: "stream", URL: ts.URL, AllowHosts: []string{"127.0.0.1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	err = c.HandleStream(context.Background(), &MCPRequest{Payload: []byte(`{"jsonrpc":"2.0"}`)}, func(r *MCPResponse) error { count++; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count < 3 {
+		t.Fatalf("expected chunks and end marker, got %d", count)
 	}
 }
 

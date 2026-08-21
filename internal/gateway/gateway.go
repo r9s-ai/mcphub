@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/r9s-ai/mcphub/internal/admin"
+	"github.com/r9s-ai/mcphub/internal/auth"
 	"github.com/r9s-ai/mcphub/internal/registry"
 	"github.com/r9s-ai/mcphub/pkg/protocol"
 )
@@ -35,26 +37,37 @@ func (s *session) write(f protocol.Frame) error {
 	defer s.writeMu.Unlock()
 	return s.conn.WriteMessage(websocket.TextMessage, b)
 }
-func (s *session) request(ctx context.Context, f protocol.Frame) (protocol.Frame, error) {
-	ch := make(chan protocol.Frame, 1)
+func (s *session) request(ctx context.Context, f protocol.Frame) (<-chan protocol.Frame, func(), error) {
+	ch := make(chan protocol.Frame, 8)
 	s.mu.Lock()
 	s.pending[f.StreamID] = ch
 	s.mu.Unlock()
-	defer func() { s.mu.Lock(); delete(s.pending, f.StreamID); s.mu.Unlock() }()
 	if err := s.write(f); err != nil {
-		return protocol.Frame{}, err
+		s.mu.Lock()
+		delete(s.pending, f.StreamID)
+		s.mu.Unlock()
+		return nil, nil, err
 	}
-	select {
-	case r := <-ch:
-		return r, nil
-	case <-ctx.Done():
-		return protocol.Frame{}, ctx.Err()
-	case <-s.closed:
-		return protocol.Frame{}, context.Canceled
-	}
+	cleanup := func() { s.mu.Lock(); delete(s.pending, f.StreamID); s.mu.Unlock() }
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.write(protocol.Frame{Type: "cancel", StreamID: f.StreamID})
+		case <-s.closed:
+		}
+	}()
+	return ch, cleanup, nil
 }
 func (s *session) readLoop(onHello func(protocol.Frame, *session)) {
-	defer close(s.closed)
+	defer func() {
+		s.mu.Lock()
+		for _, ch := range s.pending {
+			close(ch)
+		}
+		s.pending = map[string]chan protocol.Frame{}
+		s.mu.Unlock()
+		close(s.closed)
+	}()
 	for {
 		_, b, err := s.conn.ReadMessage()
 		if err != nil {
@@ -72,20 +85,33 @@ func (s *session) readLoop(onHello func(protocol.Frame, *session)) {
 		ch := s.pending[f.StreamID]
 		s.mu.Unlock()
 		if ch != nil {
-			ch <- f
+			select {
+			case ch <- f:
+			default:
+			}
 		}
 	}
 }
 
 type Gateway struct {
-	mu       sync.RWMutex
-	sessions map[string]*session
-	registry *registry.Registry
-	upgrader websocket.Upgrader
+	mu           sync.RWMutex
+	sessions     map[string]*session
+	registry     *registry.Registry
+	upgrader     websocket.Upgrader
+	connectToken string
+	deviceAuth   *auth.DeviceAuth
 }
 
+func routeKey(tenant, component string) string { return tenant + ":" + component }
+
 func New() *Gateway {
-	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	return NewWithToken(os.Getenv("MCP_GATEWAY_CONNECT_TOKEN"))
+}
+func NewWithToken(connectToken string) *Gateway {
+	return NewWithOptions(connectToken, "http://127.0.0.1:3080")
+}
+func NewWithOptions(connectToken, publicURL string) *Gateway {
+	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: auth.NewDeviceAuth(publicURL), upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -100,6 +126,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("/mcp/", g.handleMCP)
 	mux.HandleFunc("/tunnel", g.handleTunnel)
 	admin.New(g.registry).Register(mux)
+	g.deviceAuth.Register(mux)
 	return mux
 }
 func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
@@ -108,9 +135,9 @@ func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	component := parts[2]
+	tenant, component := parts[1], parts[2]
 	g.mu.RLock()
-	s, ok := g.sessions[component]
+	s, ok := g.sessions[routeKey(tenant, component)]
 	g.mu.RUnlock()
 	if !ok {
 		http.Error(w, "component not connected", 503)
@@ -127,22 +154,59 @@ func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 			h[k] = v
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 	id := time.Now().Format("20060102150405.000000000")
-	res, err := s.request(ctx, protocol.Frame{Type: "request", StreamID: id, ComponentID: component, Method: r.Method, Headers: h, Payload: body})
+	frames, cleanup, err := s.request(ctx, protocol.Frame{Type: "request", StreamID: id, ComponentID: component, Method: r.Method, Headers: h, Payload: body})
 	if err != nil {
 		http.Error(w, err.Error(), 502)
 		return
 	}
-	for k, v := range res.Headers {
-		w.Header().Set(k, v)
+	defer cleanup()
+	flusher, _ := w.(http.Flusher)
+	wroteHeader := false
+	for {
+		select {
+		case res, ok := <-frames:
+			if !ok {
+				if !wroteHeader {
+					http.Error(w, "tunnel closed", 502)
+				}
+				return
+			}
+			if res.Error != "" && res.Status == 0 {
+				if !wroteHeader {
+					http.Error(w, res.Error, 502)
+				}
+				return
+			}
+			if !wroteHeader {
+				for k, v := range res.Headers {
+					w.Header().Set(k, v)
+				}
+				status := res.Status
+				if status == 0 {
+					status = 200
+				}
+				w.WriteHeader(status)
+				wroteHeader = true
+			}
+			if len(res.Payload) > 0 {
+				_, _ = w.Write(res.Payload)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if res.EndOfStream {
+				return
+			}
+		case <-ctx.Done():
+			if !wroteHeader {
+				http.Error(w, ctx.Err().Error(), 502)
+			}
+			return
+		}
 	}
-	if res.Status == 0 {
-		res.Status = 502
-	}
-	w.WriteHeader(res.Status)
-	_, _ = w.Write(res.Payload)
 }
 
 func (g *Gateway) handleTunnel(w http.ResponseWriter, r *http.Request) {
@@ -152,32 +216,49 @@ func (g *Gateway) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	s := newSession(conn)
 	defer conn.Close()
-	connectID := ""
+	connectID, tenantID := "", "demo"
 	s.readLoop(func(f protocol.Frame, current *session) {
+		if f.Type == "hello" && ((g.connectToken != "" && f.GatewayToken != g.connectToken) && !g.deviceAuth.Validate(f.GatewayToken)) {
+			_ = current.write(protocol.Frame{Type: "error", Error: "invalid connect token"})
+			_ = current.conn.Close()
+			return
+		}
 		if f.Type == "heartbeat" {
+			if f.TenantID != "" {
+				tenantID = f.TenantID
+			}
 			id := f.ConnectID
 			if id == "" {
 				id = connectID
 			}
-			g.registry.Heartbeat(id, f.ComponentID, time.Now().UTC())
+			if tenantID == "" {
+				tenantID = "demo"
+			}
+			g.registry.Heartbeat(tenantID, id, f.ComponentID, time.Now().UTC())
 			return
 		}
 		if f.ComponentID == "" {
 			return
 		}
 		connectID = f.ConnectID
+		if f.TenantID != "" {
+			tenantID = f.TenantID
+		}
 		if connectID == "" {
 			connectID = f.ComponentID
 		}
-		g.registry.Register(connectID, f.ConnectName, f.Version, f.ComponentID, f.ComponentName, f.Transport, f.UpstreamURL, r.RemoteAddr, time.Now().UTC())
+		if err := g.registry.Register(tenantID, connectID, f.ConnectName, f.Version, f.ComponentID, f.ComponentName, f.Transport, f.UpstreamURL, r.RemoteAddr, time.Now().UTC()); err != nil {
+			_ = current.write(protocol.Frame{Type: "error", ComponentID: f.ComponentID, Error: err.Error()})
+			return
+		}
 		// The first hello is handled as a registration frame. Component metadata is
 		// carried by the frame and stored by the registry before routing begins.
 		g.mu.Lock()
-		g.sessions[f.ComponentID] = s
+		g.sessions[routeKey(tenantID, f.ComponentID)] = s
 		g.mu.Unlock()
 	})
 	if connectID != "" {
-		g.registry.Disconnect(connectID)
+		g.registry.Disconnect(tenantID, connectID)
 	}
 	g.mu.Lock()
 	for name, cur := range g.sessions {

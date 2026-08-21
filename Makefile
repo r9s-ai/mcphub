@@ -2,8 +2,11 @@ SHELL := /bin/sh
 
 GATEWAY_ADDR ?= :3080
 ADMIN_DIR := web/admin
+COMPOSE_FILE := deploy/docker-compose.dev.yml
+DATABASE_URL ?= postgres://mcphub:mcphub@127.0.0.1:5432/mcphub?sslmode=disable
+REDIS_URL ?= redis://127.0.0.1:6379/0
 
-.PHONY: help install test vet build build-admin gateway connect-daemon admin dev clean
+.PHONY: help install test vet build build-admin gateway connect-daemon admin dev infra-up infra-down infra-logs migrate clean
 
 help:
 	@printf '%s\n' \
@@ -14,6 +17,9 @@ help:
 		'make build-admin  Build the Admin frontend' \
 		'make gateway      Start the MCP Gateway' \
 		'make connect-daemon Start the mcp-connect daemon' \
+		'make infra-up       Start PostgreSQL and Redis' \
+		'make infra-down     Stop PostgreSQL and Redis' \
+		'make migrate        Run PostgreSQL migrations' \
 		'make admin        Start the Admin frontend' \
 		'make dev          Start Gateway and Admin together'
 
@@ -35,16 +41,28 @@ build-admin:
 gateway:
 	go run ./cmd/mcp-gateway --addr $(GATEWAY_ADDR)
 
+infra-up:
+	docker compose -f $(COMPOSE_FILE) up -d
+
+infra-down:
+	docker compose -f $(COMPOSE_FILE) down
+
+infra-logs:
+	docker compose -f $(COMPOSE_FILE) logs -f postgres redis
+
+migrate:
+	MCP_STORAGE=postgres DATABASE_URL=$(DATABASE_URL) go run ./cmd/mcp-gateway --migrate-only
+
 connect-daemon:
 	go run ./cmd/mcp-connect daemon
 
 admin:
 	cd $(ADMIN_DIR) && pnpm dev
 
-dev: install
+dev: install infra-up
 	@set -eu; \
 	trap 'kill 0 2>/dev/null || true' INT TERM EXIT; \
-	go run ./cmd/mcp-gateway --addr $(GATEWAY_ADDR) & \
+	MCP_STORAGE=postgres DATABASE_URL=$(DATABASE_URL) REDIS_URL=$(REDIS_URL) go run ./cmd/mcp-gateway --addr $(GATEWAY_ADDR) & \
 	GATEWAY_PID=$$!; \
 	(cd $(ADMIN_DIR) && pnpm dev) & \
 	ADMIN_PID=$$!; \

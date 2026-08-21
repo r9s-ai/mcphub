@@ -14,6 +14,7 @@ import (
 	"github.com/r9s-ai/mcphub/internal/admin"
 	"github.com/r9s-ai/mcphub/internal/auth"
 	"github.com/r9s-ai/mcphub/internal/registry"
+	"github.com/r9s-ai/mcphub/internal/store"
 	"github.com/r9s-ai/mcphub/pkg/protocol"
 )
 
@@ -94,12 +95,15 @@ func (s *session) readLoop(onHello func(protocol.Frame, *session)) {
 }
 
 type Gateway struct {
-	mu           sync.RWMutex
-	sessions     map[string]*session
-	registry     *registry.Registry
-	upgrader     websocket.Upgrader
-	connectToken string
-	deviceAuth   *auth.DeviceAuth
+	mu            sync.RWMutex
+	sessions      map[string]*session
+	registry      *registry.Registry
+	upgrader      websocket.Upgrader
+	connectToken  string
+	deviceAuth    *auth.DeviceAuth
+	connectStore  store.ConnectStore
+	presenceStore store.PresenceStore
+	auditStore    store.AuditStore
 }
 
 func routeKey(tenant, component string) string { return tenant + ":" + component }
@@ -111,7 +115,25 @@ func NewWithToken(connectToken string) *Gateway {
 	return NewWithOptions(connectToken, "http://127.0.0.1:3080")
 }
 func NewWithOptions(connectToken, publicURL string) *Gateway {
-	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: auth.NewDeviceAuth(publicURL), upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	return NewWithStores(connectToken, publicURL, nil, nil)
+}
+func NewWithStores(connectToken, publicURL string, cs store.ConnectStore, ps store.PresenceStore, authStores ...store.AuthStore) *Gateway {
+	var as store.AuthStore
+	if len(authStores) > 0 {
+		as = authStores[0]
+	}
+	deviceAuth := auth.NewDeviceAuthWithStores(publicURL, as, ps)
+	var audit store.AuditStore
+	if v, ok := cs.(store.AuditStore); ok {
+		audit = v
+	}
+	g := &Gateway{sessions: map[string]*session{}, registry: registry.New(), connectToken: connectToken, deviceAuth: deviceAuth, connectStore: cs, presenceStore: ps, auditStore: audit, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
+	if cs != nil {
+		go g.restore(context.Background())
+	}
+	if ps != nil {
+		go g.presenceLoop()
+	}
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -120,6 +142,40 @@ func NewWithOptions(connectToken, publicURL string) *Gateway {
 		}
 	}()
 	return g
+}
+func (g *Gateway) presenceLoop() {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for now := range t.C {
+		_ = now
+		connects, components := g.registry.Snapshot()
+		for _, c := range connects {
+			online, err := g.presenceStore.ConnectOnline(context.Background(), c.TenantID, c.ID)
+			if err == nil && !online {
+				g.registry.Disconnect(c.TenantID, c.ID)
+			}
+		}
+		for _, c := range components {
+			online, err := g.presenceStore.ComponentOnline(context.Background(), c.TenantID, c.ConnectID, c.ID)
+			if err == nil && !online {
+				g.registry.DisconnectComponent(c.TenantID, c.ConnectID, c.ID)
+			}
+		}
+	}
+}
+func (g *Gateway) restore(ctx context.Context) {
+	cs, err := g.connectStore.ListConnects(ctx, "")
+	if err == nil {
+		for _, c := range cs {
+			g.registry.RestoreConnect(c)
+		}
+	}
+	comps, err := g.connectStore.ListComponents(ctx, "")
+	if err == nil {
+		for _, c := range comps {
+			g.registry.RestoreComponent(c)
+		}
+	}
 }
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -156,9 +212,18 @@ func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
+	started := time.Now()
+	auditStatus := 0
+	auditError := ""
+	defer func() {
+		if g.auditStore != nil {
+			_ = g.auditStore.RecordAudit(context.Background(), store.AuditEvent{TenantID: tenant, ComponentID: component, Method: r.Method, Status: auditStatus, Latency: time.Since(started), ErrorCode: auditError}, time.Now())
+		}
+	}()
 	id := time.Now().Format("20060102150405.000000000")
 	frames, cleanup, err := s.request(ctx, protocol.Frame{Type: "request", StreamID: id, ComponentID: component, Method: r.Method, Headers: h, Payload: body})
 	if err != nil {
+		auditError = "tunnel_request_failed"
 		http.Error(w, err.Error(), 502)
 		return
 	}
@@ -169,12 +234,14 @@ func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case res, ok := <-frames:
 			if !ok {
+				auditError = "tunnel_closed"
 				if !wroteHeader {
 					http.Error(w, "tunnel closed", 502)
 				}
 				return
 			}
 			if res.Error != "" && res.Status == 0 {
+				auditError = res.Error
 				if !wroteHeader {
 					http.Error(w, res.Error, 502)
 				}
@@ -189,6 +256,7 @@ func (g *Gateway) handleMCP(w http.ResponseWriter, r *http.Request) {
 					status = 200
 				}
 				w.WriteHeader(status)
+				auditStatus = status
 				wroteHeader = true
 			}
 			if len(res.Payload) > 0 {
@@ -235,6 +303,13 @@ func (g *Gateway) handleTunnel(w http.ResponseWriter, r *http.Request) {
 				tenantID = "demo"
 			}
 			g.registry.Heartbeat(tenantID, id, f.ComponentID, time.Now().UTC())
+			if g.connectStore != nil {
+				_ = g.connectStore.Heartbeat(context.Background(), tenantID, id, f.ComponentID, time.Now().UTC())
+			}
+			if g.presenceStore != nil {
+				_ = g.presenceStore.SetConnectHeartbeat(context.Background(), tenantID, id, 30*time.Second)
+				_ = g.presenceStore.SetComponentHeartbeat(context.Background(), tenantID, id, f.ComponentID, 30*time.Second)
+			}
 			return
 		}
 		if f.ComponentID == "" {
@@ -251,6 +326,16 @@ func (g *Gateway) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			_ = current.write(protocol.Frame{Type: "error", ComponentID: f.ComponentID, Error: err.Error()})
 			return
 		}
+		if g.connectStore != nil {
+			if err := g.connectStore.RegisterConnect(context.Background(), store.RegisterConnectInput{TenantID: tenantID, ConnectID: connectID, ConnectName: f.ConnectName, Version: f.Version, ComponentID: f.ComponentID, ComponentName: f.ComponentName, Transport: f.Transport, UpstreamURL: f.UpstreamURL, RemoteAddr: r.RemoteAddr}, time.Now().UTC()); err != nil {
+				_ = current.write(protocol.Frame{Type: "error", ComponentID: f.ComponentID, Error: err.Error()})
+				return
+			}
+		}
+		if g.presenceStore != nil {
+			_ = g.presenceStore.SetConnectHeartbeat(context.Background(), tenantID, connectID, 30*time.Second)
+			_ = g.presenceStore.SetComponentHeartbeat(context.Background(), tenantID, connectID, f.ComponentID, 30*time.Second)
+		}
 		// The first hello is handled as a registration frame. Component metadata is
 		// carried by the frame and stored by the registry before routing begins.
 		g.mu.Lock()
@@ -259,6 +344,12 @@ func (g *Gateway) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	})
 	if connectID != "" {
 		g.registry.Disconnect(tenantID, connectID)
+		if g.connectStore != nil {
+			_ = g.connectStore.Disconnect(context.Background(), tenantID, connectID, time.Now().UTC())
+		}
+		if g.presenceStore != nil {
+			_ = g.presenceStore.ClearConnect(context.Background(), tenantID, connectID)
+		}
 	}
 	g.mu.Lock()
 	for name, cur := range g.sessions {

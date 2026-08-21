@@ -12,6 +12,8 @@ The connector layer supports two transports:
 
 The daemon stores local component configuration and exposes a Unix Socket control API to the CLI. It uses one persistent WebSocket tunnel for the configured components, with automatic reconnect and heartbeat registration.
 
+PostgreSQL is the authoritative store for tenants, Connect instances, components, device codes, tokens, and audit records. Redis is used for heartbeat TTLs, token-revocation fast checks, short-lived authorization state, and future rate limiting. The Gateway can fall back to the in-memory stores for local development.
+
 The Gateway registry keeps connection and component state in memory for the current process. It records registration time, last heartbeat, transport, upstream URL, public route, and the latest status.
 
 The Admin API is deliberately separated from the Gateway data plane under `/api/admin`. Authentication is not enabled in development mode, but the route boundary is reserved for a future authenticator middleware.

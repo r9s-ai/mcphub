@@ -146,6 +146,15 @@ Open `http://127.0.0.1:3081/admin`. The dashboard polls status every five second
 
 The Admin frontend uses [pnpm](https://pnpm.io/). Install pnpm before running the frontend commands. The Makefile uses `pnpm install --ignore-scripts` because the Admin bundle does not require dependency build scripts.
 
+Start the local PostgreSQL and Redis dependencies with:
+
+```bash
+make infra-up
+make migrate
+```
+
+Set `MCP_STORAGE=postgres`, `DATABASE_URL`, and `REDIS_URL` when running the Gateway against persistent storage. Without these variables the Gateway keeps using its in-memory development registry.
+
 To start the Gateway and Admin together:
 
 ```bash

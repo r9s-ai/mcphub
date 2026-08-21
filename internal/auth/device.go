@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/r9s-ai/mcphub/internal/store"
 )
 
 type DeviceCode struct {
@@ -29,13 +33,29 @@ type deviceEntry struct {
 	Revoked        bool
 }
 type DeviceAuth struct {
-	mu        sync.Mutex
-	entries   map[string]*deviceEntry
-	publicURL string
+	mu         sync.Mutex
+	entries    map[string]*deviceEntry
+	publicURL  string
+	backend    store.AuthStore
+	revocation store.PresenceStore
 }
 
 func NewDeviceAuth(publicURL string) *DeviceAuth {
 	return &DeviceAuth{entries: map[string]*deviceEntry{}, publicURL: strings.TrimRight(publicURL, "/")}
+}
+func NewDeviceAuthWithStore(publicURL string, backend store.AuthStore) *DeviceAuth {
+	a := NewDeviceAuth(publicURL)
+	a.backend = backend
+	return a
+}
+func NewDeviceAuthWithStores(publicURL string, backend store.AuthStore, revocation store.PresenceStore) *DeviceAuth {
+	a := NewDeviceAuthWithStore(publicURL, backend)
+	a.revocation = revocation
+	return a
+}
+func hashValue(v string) string {
+	h := sha256.Sum256([]byte(v))
+	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 func randomString(n int) string {
 	b := make([]byte, n)
@@ -56,6 +76,19 @@ func (a *DeviceAuth) code(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e := &deviceEntry{DeviceCode: randomString(24), UserCode: strings.ToUpper(randomString(5)), ExpiresAt: time.Now().Add(10 * time.Minute)}
+	if a.backend != nil {
+		var in struct {
+			TenantID string `json:"tenant_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.TenantID == "" {
+			in.TenantID = "demo"
+		}
+		if err := a.backend.CreateDeviceCode(r.Context(), store.DeviceCodeInput{DeviceCodeHash: hashValue(e.DeviceCode), UserCodeHash: hashValue(e.UserCode), TenantID: in.TenantID, ExpiresAt: e.ExpiresAt}); err != nil {
+			writeStatus(w, 500, "storage_error")
+			return
+		}
+	}
 	a.mu.Lock()
 	a.entries[e.DeviceCode] = e
 	a.mu.Unlock()
@@ -70,6 +103,15 @@ func (a *DeviceAuth) token(w http.ResponseWriter, r *http.Request) {
 		DeviceCode string `json:"device_code"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&in)
+	if a.backend != nil {
+		pair, err := a.backend.ExchangeDeviceCode(r.Context(), hashValue(in.DeviceCode), time.Now())
+		if err != nil {
+			writeStatus(w, 400, err.Error())
+			return
+		}
+		write(w, map[string]any{"access_token": pair.AccessToken, "token_type": "Bearer", "expires_in": int(time.Until(pair.AccessExpiresAt).Seconds()), "refresh_token": pair.RefreshToken})
+		return
+	}
 	a.mu.Lock()
 	e := a.entries[in.DeviceCode]
 	if e == nil || time.Now().After(e.ExpiresAt) || e.Revoked {
@@ -109,6 +151,15 @@ func (a *DeviceAuth) oauthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refresh := r.FormValue("refresh_token")
+	if a.backend != nil {
+		pair, err := a.backend.RefreshToken(r.Context(), hashValue(refresh), time.Now())
+		if err != nil {
+			writeStatus(w, 400, err.Error())
+			return
+		}
+		write(w, map[string]any{"access_token": pair.AccessToken, "token_type": "Bearer", "expires_in": int(time.Until(pair.AccessExpiresAt).Seconds()), "refresh_token": pair.RefreshToken})
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, e := range a.entries {
@@ -128,6 +179,14 @@ func (a *DeviceAuth) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = r.ParseForm()
 	token := r.FormValue("token")
+	if a.backend != nil {
+		_ = a.backend.RevokeToken(r.Context(), hashValue(token), time.Now())
+		if a.revocation != nil {
+			_ = a.revocation.MarkTokenRevoked(r.Context(), hashValue(token), time.Hour)
+		}
+		write(w, map[string]any{"revoked": true})
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, e := range a.entries {
@@ -142,6 +201,16 @@ func (a *DeviceAuth) revoke(w http.ResponseWriter, r *http.Request) {
 func (a *DeviceAuth) Validate(token string) bool {
 	if token == "" {
 		return false
+	}
+	if a.backend != nil {
+		if a.revocation != nil {
+			revoked, err := a.revocation.TokenRevoked(context.Background(), hashValue(token))
+			if err == nil && revoked {
+				return false
+			}
+		}
+		_, err := a.backend.ValidateAccessToken(context.Background(), hashValue(token), time.Now())
+		return err == nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -164,6 +233,14 @@ func (a *DeviceAuth) approve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		code = in.UserCode
+	}
+	if a.backend != nil {
+		if err := a.backend.ApproveDeviceCode(r.Context(), hashValue(code), time.Now()); err != nil {
+			writeStatus(w, 404, "invalid_user_code")
+			return
+		}
+		write(w, map[string]any{"approved": true})
+		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

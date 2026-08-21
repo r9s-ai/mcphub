@@ -73,8 +73,8 @@ The remaining MVP-critical work is true streaming and cancellation, reconnect ha
 
 ### Persistence and distribution
 
-- [ ] Add PostgreSQL persistence and migrations.
-- [ ] Persist connects, components, tenants, tokens, and connection history.
+- [~] Add PostgreSQL persistence and goose migrations. Connects, components, tenants, Device Code records, tokens, and audit schema are implemented; audit writes and full Admin repository reads are still pending.
+- [~] Persist connects, components, tenants, and tokens. Gateway restores persisted Connect/component records on startup; Redis-backed live status overlay and complete history views remain pending.
 - [ ] Add macOS/Linux installation scripts or packages.
 - [ ] Publish a hosted Gateway demonstration environment.
 
@@ -112,7 +112,7 @@ The remaining MVP-critical work is true streaming and cancellation, reconnect ha
 
 - [ ] Add request body and response body limits.
 - [ ] Add per-route rate limits and per-component concurrency limits.
-- [ ] Add structured audit logs with sensitive-field redaction.
+- [~] Add structured audit logs with sensitive-field redaction. Gateway request audit persistence is wired to PostgreSQL; actor enrichment and full redaction policy are still pending.
 - [ ] Add Gateway and `mcp-connect` metrics, health endpoints, and latency measurements.
 - [ ] Add version checking and an upgrade mechanism for `mcp-connect`.
 

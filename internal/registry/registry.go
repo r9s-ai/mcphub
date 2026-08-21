@@ -8,6 +8,7 @@ import (
 )
 
 var ErrComponentNameTaken = errors.New("component name is already registered in tenant")
+var ErrComponentNotFound = errors.New("component not found")
 
 const heartbeatTTL = 30 * time.Second
 
@@ -100,6 +101,13 @@ func (r *Registry) Disconnect(tenantID, connectID string) {
 		}
 	}
 }
+func (r *Registry) DisconnectComponent(tenantID, connectID, componentID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c := r.components[componentKey(tenantID, connectID, componentID)]; c != nil {
+		c.Status = "offline"
+	}
+}
 
 func (r *Registry) Expire(now time.Time) {
 	r.mu.Lock()
@@ -139,4 +147,17 @@ func (r *Registry) Component(id string) (RegisteredComponent, bool) {
 		}
 	}
 	return RegisteredComponent{}, false
+}
+
+func (r *Registry) RestoreConnect(c ConnectInstance) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := c
+	r.connects[connectKey(c.TenantID, c.ID)] = &cp
+}
+func (r *Registry) RestoreComponent(c RegisteredComponent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := c
+	r.components[componentKey(c.TenantID, c.ConnectID, c.ID)] = &cp
 }

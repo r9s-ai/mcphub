@@ -19,6 +19,18 @@ profile.cov
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+vendor/
+
+# Frontend build output
+web/admin/node_modules/
+web/admin/dist/
+web/admin/.vite/
+*.tsbuildinfo
+
+# Local runtime data
+*.log
+.tmp/
+data/
 
 # Go workspace file
 go.work
